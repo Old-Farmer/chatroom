@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Mango)
+project(Chatroom)
 
 set(CMAKE_C_STANDARD 11)
 
