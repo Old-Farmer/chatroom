@@ -31,6 +31,6 @@ The server is used to transfer user msgs.
 
 The msg protocol is simple:
 
-|name:char[]|0|sentences:char[]|0|
+|name:char[]|'\0'|sentences:char[]|'\0'|
 
 Client: ctrl-d to quit the client, Backspace to delete a character. ASCII support only.
