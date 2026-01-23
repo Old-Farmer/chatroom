@@ -125,6 +125,7 @@ static bool client_connect(Client *self, const char *addr, const char *port) {
 static void repl(Client *client) {
     char buf[BUF_SIZE];
     term_set();
+    ignore_sigpipe();
 
     int epoll_fd = epoll_create(1);
     if (epoll_fd == -1) {
@@ -193,7 +194,15 @@ static void repl(Client *client) {
                         buf_append(&send_buf, (char *)user_buf.data,
                                    user_buf.len);
                         buf_append(&send_buf, "\0", 1);
-                        write(client->sock, send_buf.data, send_buf.len);
+                        ssize_t s =
+                            write(client->sock, send_buf.data, send_buf.len);
+                        if (s != (ssize_t)send_buf.len) {
+                            // parital write in blocking mode or err
+                            client->quit = true;
+                            fputs(CLEARLINE_AND_HOME, stdout);
+                            printf("write error\n");
+                            break;
+                        }
                         buf_clear(&send_buf);
                         buf_clear(&user_buf);
                     } else if (buf[j] == 4) {  // Ctrl-D
@@ -213,13 +222,30 @@ static void repl(Client *client) {
                     fflush(stdout);
                 }
             } else {  // network recv
-                int s = read(fd, buf, BUF_SIZE);
-                if (s == 0 || s == -1) {
+                if (ev[i].events & EPOLLERR) {
+                    fputs(CLEARLINE_AND_HOME, stdout);
+                    printf("socket error\n");
+                    client->quit = true;
+                    continue;
+                } else if (ev[i].events & EPOLLHUP) {
                     fputs(CLEARLINE_AND_HOME, stdout);
                     fputs("The server close the connect\n", stdout);
                     client->quit = true;
                     continue;
                 }
+                ssize_t s = read(fd, buf, BUF_SIZE);
+                if (s == 0) {
+                    fputs(CLEARLINE_AND_HOME, stdout);
+                    fputs("The server close the connect\n", stdout);
+                    client->quit = true;
+                    continue;
+                } else if (s == -1) {
+                    fputs(CLEARLINE_AND_HOME, stdout);
+                    printf("read error: %s\n", strerror(errno));
+                    client->quit = true;
+                    continue;
+                }
+
                 for (int j = 0; j < s; j++) {
                     if (buf[j] == '\0') {
                         recv_state++;

@@ -21,12 +21,15 @@ typedef struct {
     int conns[MAX_CONN];  // -1 means no conn
     int conns_max_size;
     int sock;
+    int epoll_fd;
 } Server;
 
 static bool server_init(Server *self, const char *addr, const char *port);
 static void server_run(Server *self);
 // return the socket fd, -1 means error.
 static int create_listening_socket(const char *addr, const char *port);
+
+static void clear_connection(Server *self, int fd);
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
@@ -53,8 +56,10 @@ static bool server_init(Server *self, const char *addr, const char *port) {
 #define EPOLL_EVENT_SIZE 1024
 
 static void server_run(Server *self) {
-    int epoll_fd = epoll_create(1);
-    if (epoll_fd == -1) {
+    ignore_sigpipe();
+
+    self->epoll_fd = epoll_create(1);
+    if (self->epoll_fd == -1) {
         log_err("epoll_create error: %s\n", strerror(errno));
         exit(1);
     }
@@ -62,14 +67,15 @@ static void server_run(Server *self) {
     struct epoll_event ev[EPOLL_EVENT_SIZE];
     ev[0].events = EPOLLIN;
     ev[0].data.fd = self->sock;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, self->sock, ev) == -1) {
+    if (epoll_ctl(self->epoll_fd, EPOLL_CTL_ADD, self->sock, ev) == -1) {
         log_err("epoll_ctl error: %s\n", strerror(errno));
         return;
     }
 
+    bool quit = false;
     char buf[BUF_SIZE];
-    while (true) {
-        int rc = epoll_wait(epoll_fd, ev, EPOLL_EVENT_SIZE, -1);
+    while (!quit) {
+        int rc = epoll_wait(self->epoll_fd, ev, EPOLL_EVENT_SIZE, -1);
         if (rc == -1 && rc != EINTR) {
             log_err("epoll_wait error: %s\n", strerror(errno));
             break;
@@ -77,6 +83,11 @@ static void server_run(Server *self) {
         for (int i = 0; i < rc; i++) {
             int fd = ev[i].data.fd;
             if (fd == self->sock) {
+                if (ev[i].events & EPOLLERR) {
+                    log_err("listening fd error\n");
+                    quit = true;
+                    break;
+                }
                 // new connection
                 int client_fd = accept(self->sock, NULL, 0);
                 if (client_fd == -1) {
@@ -94,8 +105,10 @@ static void server_run(Server *self) {
                     close(client_fd);
                     continue;
                 }
-                struct epoll_event new_ev = {.events = EPOLLIN, .data.fd = client_fd};
-                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &new_ev) == -1) {
+                struct epoll_event new_ev = {.events = EPOLLIN,
+                                             .data.fd = client_fd};
+                if (epoll_ctl(self->epoll_fd, EPOLL_CTL_ADD, client_fd,
+                              &new_ev) == -1) {
                     continue;
                 }
                 self->conns[j] = client_fd;
@@ -104,27 +117,23 @@ static void server_run(Server *self) {
                 }
                 printf("New connection: %d\n", client_fd);
             } else {
+                if (ev[i].events & EPOLLHUP || ev[i].events & EPOLLERR) {
+                    clear_connection(self, ev[i].data.fd);
+                    continue;
+                }
                 int s = read(ev[i].data.fd, buf, BUF_SIZE);
                 if (s <= 0) {
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ev[i].data.fd, NULL);
-                    close(fd);
-                    for (int j = 0; j < self->conns_max_size; j++) {
-                        if (self->conns[j] == fd) {
-                            self->conns[i] = -1;
-                            if (j == self->conns_max_size - 1) {
-                                self->conns_max_size--;
-                            }
-                            break;
-                        }
-                    }
-                    printf("connection %d disconnected\n", ev[i].data.fd);
+                    clear_connection(self, ev[i].data.fd);
                 } else {
                     // broadcast
                     for (int j = 0; j < self->conns_max_size; j++) {
                         if (self->conns[j] == -1 || self->conns[j] == fd) {
                             continue;
                         }
-                        write(self->conns[j], buf, s);
+                        ssize_t ws = write(self->conns[j], buf, s);
+                        if (ws != s) {
+                            clear_connection(self, ev[i].data.fd);
+                        }
                     }
                     printf("transfer connection %d msg\n", fd);
                 }
@@ -169,5 +178,21 @@ static int create_listening_socket(const char *addr, const char *port) {
         log_err("Listen error: %s\n", strerror(errno));
         return -1;
     }
+    fputs("Listenning\n", stdout);
     return sock;
+}
+
+static void clear_connection(Server *self, int fd) {
+    epoll_ctl(self->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    close(fd);
+    for (int j = 0; j < self->conns_max_size; j++) {
+        if (self->conns[j] == fd) {
+            self->conns[j] = -1;
+            if (j == self->conns_max_size - 1) {
+                self->conns_max_size--;
+            }
+            break;
+        }
+    }
+    printf("connection %d disconnected\n", fd);
 }

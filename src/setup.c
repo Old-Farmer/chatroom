@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,8 +58,8 @@ void keepalive(int fd) {
     rc = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable));
     assert(rc == 0);
 
-    int idle = 10;
-    int interval = 3;
+    int idle = 60;
+    int interval = 60;
     int count = 3;
 
     rc = setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
@@ -74,4 +75,8 @@ void reuseaddr(int fd) {
     int enable = 1;
     int rc = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
     assert(rc == 0);
+}
+
+void ignore_sigpipe() {
+    signal(SIGPIPE, SIG_IGN);
 }
