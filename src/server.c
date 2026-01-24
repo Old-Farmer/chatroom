@@ -76,7 +76,7 @@ static void server_run(Server *self) {
     char buf[BUF_SIZE];
     while (!quit) {
         int rc = epoll_wait(self->epoll_fd, ev, EPOLL_EVENT_SIZE, -1);
-        if (rc == -1 && rc != EINTR) {
+        if (rc == -1 && errno != EINTR) {
             log_err("epoll_wait error: %s\n", strerror(errno));
             break;
         }
@@ -121,7 +121,7 @@ static void server_run(Server *self) {
                     clear_connection(self, ev[i].data.fd);
                     continue;
                 }
-                int s = read(ev[i].data.fd, buf, BUF_SIZE);
+                int s = read_inter_retry(ev[i].data.fd, buf, BUF_SIZE);
                 if (s <= 0) {
                     clear_connection(self, ev[i].data.fd);
                 } else {
@@ -130,8 +130,7 @@ static void server_run(Server *self) {
                         if (self->conns[j] == -1 || self->conns[j] == fd) {
                             continue;
                         }
-                        ssize_t ws = write(self->conns[j], buf, s);
-                        if (ws != s) {
+                        if (!writeall(self->conns[j], buf, s)) {
                             clear_connection(self, ev[i].data.fd);
                         }
                     }

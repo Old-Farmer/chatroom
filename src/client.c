@@ -78,6 +78,7 @@ int main(int argc, char *argv[]) {
     if (!client_connect(&client, argv[1], argv[2])) {
         exit(1);
     }
+    printf("Connected to server!\n");
     repl(&client);
     term_restore();
     printf("\nByeBye!\n");
@@ -109,7 +110,10 @@ static bool client_connect(Client *self, const char *addr, const char *port) {
             continue;
         }
         nodelay(self->sock);
-        if (connect(self->sock, rp->ai_addr, rp->ai_addrlen) == 0) {
+        do {
+            rc = connect(self->sock, rp->ai_addr, rp->ai_addrlen);
+        } while (rc == -1 && errno != EINTR);
+        if (rc == 0) {
             break;
         }
         log_err("Connect error: %s\n", strerror(errno));
@@ -171,7 +175,7 @@ static void repl(Client *client) {
         for (int i = 0; i < rc; i++) {
             int fd = ev[i].data.fd;
             if (fd == infd) {  // user input
-                int s = read(fd, buf, BUF_SIZE);
+                int s = read_inter_retry(fd, buf, BUF_SIZE);
                 assert(s != -1 && s != 0);
                 for (int j = 0; j < s; j++) {
                     // We only care about ascii sequence
@@ -194,10 +198,8 @@ static void repl(Client *client) {
                         buf_append(&send_buf, (char *)user_buf.data,
                                    user_buf.len);
                         buf_append(&send_buf, "\0", 1);
-                        ssize_t s =
-                            write(client->sock, send_buf.data, send_buf.len);
-                        if (s != (ssize_t)send_buf.len) {
-                            // parital write in blocking mode or err
+                        if (!writeall(client->sock, send_buf.data,
+                                      send_buf.len)) {
                             client->quit = true;
                             fputs(CLEARLINE_AND_HOME, stdout);
                             printf("write error\n");

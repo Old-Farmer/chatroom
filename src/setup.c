@@ -1,6 +1,7 @@
 #include "setup.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <signal.h>
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 void log_err(const char *format, ...) {
     va_list ap;
@@ -77,6 +79,32 @@ void reuseaddr(int fd) {
     assert(rc == 0);
 }
 
-void ignore_sigpipe() {
-    signal(SIGPIPE, SIG_IGN);
+ssize_t read_inter_retry(int fd, void *buf, size_t s) {
+    ssize_t rs;
+    do {
+        rs = read(fd, buf, s);
+    } while (rs == -1 && errno == EINTR);
+    return rs;
 }
+
+ssize_t write_inter_retry(int fd, void *buf, size_t s) {
+    ssize_t rs;
+    do {
+        rs = write(fd, buf, s);
+    } while (rs == -1 && errno == EINTR);
+    return rs;
+}
+
+bool writeall(int fd, void *buf, size_t s) {
+    size_t left = s;
+    while (left != 0) {
+        ssize_t rs = write_inter_retry(fd, buf, left);
+        if (rs == -1) {
+            return false;
+        }
+        left -= rs;
+    }
+    return true;
+}
+
+void ignore_sigpipe() { signal(SIGPIPE, SIG_IGN); }
